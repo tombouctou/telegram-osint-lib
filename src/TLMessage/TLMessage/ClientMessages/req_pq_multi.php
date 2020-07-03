@@ -7,6 +7,9 @@ namespace TelegramOSINT\TLMessage\TLMessage\ClientMessages;
 use TelegramOSINT\TLMessage\TLMessage\Packer;
 use TelegramOSINT\TLMessage\TLMessage\TLClientMessage;
 
+/**
+ * @see https://core.telegram.org/mtproto/auth_key
+ */
 class req_pq_multi implements TLClientMessage
 {
     public const CONSTRUCTOR = 0xBE7E8EF1;

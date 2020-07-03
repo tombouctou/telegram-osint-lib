@@ -4,6 +4,7 @@ namespace TelegramOSINT\Auth\Protocol;
 
 use TelegramOSINT\TGConnection\DataCentre;
 use TelegramOSINT\TLMessage\TLMessage\ClientMessages\p_q_inner_data_dc;
+use TelegramOSINT\TLMessage\TLMessage\ClientMessages\p_q_inner_data_temp;
 use TelegramOSINT\TLMessage\TLMessage\TLClientMessage;
 use TelegramOSINT\Tools\Proxy;
 
@@ -28,11 +29,14 @@ class AppAuthorization extends BaseAuthorization
      * @param string $oldClientNonce
      * @param string $serverNonce
      * @param string $newClientNonce
+     * @param bool   $isTemp
      *
      * @return TLClientMessage
      */
-    protected function getPqInnerDataMessage($pq, $p, $q, $oldClientNonce, $serverNonce, $newClientNonce): TLClientMessage
+    protected function getPqInnerDataMessage($pq, $p, $q, $oldClientNonce, $serverNonce, $newClientNonce, bool $isTemp = false)
     {
-        return new p_q_inner_data_dc($pq, $p, $q, $oldClientNonce, $serverNonce, $newClientNonce, $this->dcId);
+        return $isTemp
+            ? new p_q_inner_data_temp($pq, $p, $q, $oldClientNonce, $serverNonce, $newClientNonce, 60000)
+            : new p_q_inner_data_dc($pq, $p, $q, $oldClientNonce, $serverNonce, $newClientNonce, $this->dcId);
     }
 }

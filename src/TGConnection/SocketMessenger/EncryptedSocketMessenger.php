@@ -143,6 +143,7 @@ class EncryptedSocketMessenger extends TgSocketMessenger
      * @param AuthKey                $authKey
      * @param MessageListener        $callback
      * @param ClientDebugLogger|null $logger
+     * @param string|null            $sessionId
      *
      * @throws TGException
      */
@@ -150,7 +151,8 @@ class EncryptedSocketMessenger extends TgSocketMessenger
         Socket $socket,
         AuthKey $authKey,
         MessageListener $callback,
-        ?ClientDebugLogger $logger = null
+        ?ClientDebugLogger $logger = null,
+        ?string $sessionId = null
     ) {
         parent::__construct($socket);
         $this->messageReceiptCallback = $callback;
@@ -165,10 +167,14 @@ class EncryptedSocketMessenger extends TgSocketMessenger
         if ($this->salt === false || $strong === false) {
             throw new TGException(TGException::ERR_CRYPTO_INVALID);
         }
-        /** @noinspection CryptographicallySecureRandomnessInspection */
-        $this->sessionId = openssl_random_pseudo_bytes(8, $strong);
-        if ($this->sessionId === false || $strong === false) {
-            throw new TGException(TGException::ERR_CRYPTO_INVALID);
+        $strong = true;
+        $this->sessionId = $sessionId;
+        if ($this->sessionId === null) {
+            /** @noinspection CryptographicallySecureRandomnessInspection */
+            $this->sessionId = openssl_random_pseudo_bytes(8, $strong);
+            if ($this->sessionId === false || $strong === false) {
+                throw new TGException(TGException::ERR_CRYPTO_INVALID);
+            }
         }
         $this->authKey = $authKey->getRawAuthKey();
         $this->authKeyId = substr(sha1($this->authKey, true), -8);
@@ -259,13 +265,13 @@ class EncryptedSocketMessenger extends TgSocketMessenger
      */
     private function decryptPayload(string $payload): string
     {
+        $origPayload = $payload;
         $authKeyId = substr($payload, 0, 8);
         $msgKey = substr($payload, 8, 16);
         $payload = substr($payload, 24);
 
-        /** @noinspection TypeUnsafeComparisonInspection */
-        if(strcmp($authKeyId, $this->authKeyId) != 0) {
-            throw new TGException(TGException::ERR_TL_CONTAINER_BAD_AUTHKEY_ID);
+        if(strcmp($authKeyId, $this->authKeyId) !== 0) {
+            throw new TGException(TGException::ERR_TL_CONTAINER_BAD_AUTHKEY_ID, bin2hex($origPayload));
         }
         [$aes_key, $aes_iv] = $this->aes_calculate($msgKey, $this->authKey, false);
         $decryptedPayload = $this->aes->decryptIgeMode($payload, $aes_key, $aes_iv);

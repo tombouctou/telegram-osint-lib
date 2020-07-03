@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace TelegramOSINT\TLMessage\TLMessage\ServerMessages;
 
 use TelegramOSINT\MTSerialization\AnonymousMessage;
-use TelegramOSINT\TLMessage\TLMessage\Packer;
 use TelegramOSINT\TLMessage\TLMessage\TLServerMessage;
 
 class BadServerSalt extends TLServerMessage
@@ -24,7 +23,7 @@ class BadServerSalt extends TLServerMessage
     {
         $newSalt = $this->getTlMessage()->getValue('new_server_salt');
 
-        return Packer::packLong($newSalt);
+        return pack('Q', $newSalt);
     }
 
     public function getBadMsgId(): int

@@ -1,5 +1,7 @@
 <?php
 
+/** @noinspection PhpUnusedPrivateFieldInspection */
+
 declare(strict_types=1);
 
 namespace TelegramOSINT\TLMessage\TLMessage\ClientMessages;

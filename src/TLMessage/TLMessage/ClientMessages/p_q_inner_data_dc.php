@@ -7,7 +7,7 @@ namespace TelegramOSINT\TLMessage\TLMessage\ClientMessages;
 use TelegramOSINT\TLMessage\TLMessage\Packer;
 use TelegramOSINT\TLMessage\TLMessage\TLClientMessage;
 
-/** @see https://tl.telethon.dev/constructors/p_q_inner_data_dc.html */
+/** @see https://core.telegram.org/mtproto/auth_key */
 class p_q_inner_data_dc implements TLClientMessage
 {
     private const CONSTRUCTOR = 0xA9F55F95;

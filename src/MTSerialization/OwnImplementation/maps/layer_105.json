@@ -15148,6 +15148,10 @@
                     "type": "flags.0?InputClientProxy"
                 },
                 {
+                    "name": "params",
+                    "type": "flags.1?JSONValue"
+                },
+                {
                     "name": "query",
                     "type": "!X"
                 }
@@ -15365,7 +15369,7 @@
             "params": [
                 {
                     "name": "flags",
-                    "type": "int"
+                    "type": "#"
                 },
                 {
                     "name": "api_id",

@@ -97,6 +97,8 @@ class TGException extends Exception
     public const ERR_ASSERT_UPDATE_EXPIRES_TIME_LONG                                  = 902000;
     public const ERR_ASSERT_LISTENER_ALREADY_SET                                      = 905000;
     public const ERR_ASSERT_UNKNOWN_HIDDEN_STATUS                                     = 906000;
+    public const ERR_ASSERT_MESSAGE_ID_GET_ONCE                                       = 907000;
+    public const ERR_ASSERT_BIND_KEY_LENGTH_VALID                                     = 908000;
 
     // proxy errors
     public const ERR_PROXY_WRONG_PROXY_TYPE                                           = 1000000;

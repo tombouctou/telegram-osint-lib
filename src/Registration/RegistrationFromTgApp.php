@@ -39,6 +39,9 @@ use TelegramOSINT\TLMessage\TLMessage\ClientMessages\init_connection;
 use TelegramOSINT\TLMessage\TLMessage\ClientMessages\input_notify_chats;
 use TelegramOSINT\TLMessage\TLMessage\ClientMessages\input_notify_users;
 use TelegramOSINT\TLMessage\TLMessage\ClientMessages\invoke_with_layer;
+use TelegramOSINT\TLMessage\TLMessage\ClientMessages\json_object;
+use TelegramOSINT\TLMessage\TLMessage\ClientMessages\json_object_value;
+use TelegramOSINT\TLMessage\TLMessage\ClientMessages\json_object_value_string;
 use TelegramOSINT\TLMessage\TLMessage\ClientMessages\send_sms_code;
 use TelegramOSINT\TLMessage\TLMessage\ClientMessages\sign_in;
 use TelegramOSINT\TLMessage\TLMessage\ClientMessages\sign_up;
@@ -117,11 +120,11 @@ class RegistrationFromTgApp implements RegisterInterface, MessageListener
         $phoneNumber = trim($phoneNumber);
 
         $this->phone = $phoneNumber;
-        $this->requestBlankAuthKey(function (AuthKey $authKey) use ($phoneNumber, $cb, $allowReReg) {
+        $this->requestBlankAuthKey(function (AuthKey $authKey, string $sessionId) use ($phoneNumber, $cb, $allowReReg) {
             $this->blankAuthKey = $authKey;
             $this->baseAuth = null;
 
-            $this->initSocketMessenger($this->dataCentre, function () use ($phoneNumber, $cb, $allowReReg) {
+            $this->initSocketMessenger($this->dataCentre, $sessionId, function () use ($phoneNumber, $cb, $allowReReg) {
                 $this->initSocketAsOfficialApp(function () use ($phoneNumber, $cb, $allowReReg) {
                     $request = new send_sms_code($phoneNumber);
                     $this->socketMessenger->getResponseAsync($request, function (AnonymousMessage $smsSentResponse) use ($cb, $allowReReg) {
@@ -149,7 +152,15 @@ class RegistrationFromTgApp implements RegisterInterface, MessageListener
     {
         // config
         $getConfig = new get_config();
-        $initConnection = new init_connection($this->accountInfo, $getConfig);
+        // @see https://github.com/DrKLO/Telegram/blob/master/TMessagesProj/jni/tgnet/MTProtoScheme.cpp#L1103
+        //$hash = hash('sha256', rand(1, 10000).'sadgsdgerhew54635634s');
+        $hash = '49C1522548EBACD46CE322B6FD47F6092BB745D0F88082145CAF35E14DCC38E1';
+        $params = new json_object([
+            new json_object_value('device_token', new json_object_value_string('__FIREBASE_GENERATING_SINCE_'.time().'__')),
+            // sha256
+            new json_object_value('data', new json_object_value_string(strtoupper($hash))),
+        ]);
+        $initConnection = new init_connection($this->accountInfo, $getConfig, $params, 1024);
         $invokeWithLayer = new invoke_with_layer(LibConfig::APP_DEFAULT_TL_LAYER_VERSION, $initConnection);
 
         $this->socketMessenger->getResponseAsync($invokeWithLayer, function (AnonymousMessage $configResponse) use ($onLastMessageReceived) {
@@ -176,13 +187,13 @@ class RegistrationFromTgApp implements RegisterInterface, MessageListener
      *
      * @throws TGException
      */
-    private function initSocketMessenger(DataCentre $dc, callable $cb): void
+    private function initSocketMessenger(DataCentre $dc, string $sessionId, callable $cb): void
     {
         $socket = $this->proxy instanceof Proxy
             ? new NonBlockingProxySocket($this->proxy, $dc, $cb)
             : new TcpSocket($dc, $cb);
 
-        $this->socketMessenger = new EncryptedSocketMessenger($socket, $this->blankAuthKey, $this, $this->logger);
+        $this->socketMessenger = new EncryptedSocketMessenger($socket, $this->blankAuthKey, $this, $this->logger, $sessionId);
     }
 
     /**
@@ -192,8 +203,7 @@ class RegistrationFromTgApp implements RegisterInterface, MessageListener
      */
     private function requestBlankAuthKey(callable $cb): void
     {
-        $this->baseAuth = new AppAuthorization($this->dataCentre);
-        $this->baseAuth->createAuthKey($cb);
+        (new AppAuthorization($this->dataCentre))->createAuthKey($cb, true);
     }
 
     /**

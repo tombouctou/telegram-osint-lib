@@ -2,6 +2,8 @@
 
 namespace TelegramOSINT\Auth\Protocol;
 
+use function sha1;
+use function substr;
 use TelegramOSINT\Auth\AES\AES;
 use TelegramOSINT\Auth\AES\PhpSecLibAES;
 use TelegramOSINT\Auth\Authorization;
@@ -22,11 +24,13 @@ use TelegramOSINT\TGConnection\DataCentre;
 use TelegramOSINT\TGConnection\Socket\NonBlockingProxySocket;
 use TelegramOSINT\TGConnection\Socket\TcpSocket;
 use TelegramOSINT\TGConnection\SocketMessenger\NotEncryptedSocketMessenger;
-use TelegramOSINT\TGConnection\SocketMessenger\SocketMessenger;
+use TelegramOSINT\TLMessage\TLMessage\ClientMessages\bind_auth_key_inner;
+use TelegramOSINT\TLMessage\TLMessage\ClientMessages\bind_temp_auth_key;
 use TelegramOSINT\TLMessage\TLMessage\ClientMessages\client_dh_inner_data;
 use TelegramOSINT\TLMessage\TLMessage\ClientMessages\req_dh_params;
 use TelegramOSINT\TLMessage\TLMessage\ClientMessages\req_pq_multi;
 use TelegramOSINT\TLMessage\TLMessage\ClientMessages\set_client_dh_params;
+use TelegramOSINT\TLMessage\TLMessage\Packer;
 use TelegramOSINT\TLMessage\TLMessage\ServerMessages\Auth\DHGenOk;
 use TelegramOSINT\TLMessage\TLMessage\ServerMessages\Auth\DHReq;
 use TelegramOSINT\TLMessage\TLMessage\ServerMessages\Auth\DHServerInnerData;
@@ -36,12 +40,14 @@ use TelegramOSINT\Tools\Proxy;
 
 abstract class BaseAuthorization implements Authorization
 {
+    private const LONG_BYTES = 8;
+
     /**
      * @var DataCentre
      */
     private $dc;
     /**
-     * @var SocketMessenger
+     * @var NotEncryptedSocketMessenger
      */
     private $socketContainer;
     /**
@@ -76,6 +82,8 @@ abstract class BaseAuthorization implements Authorization
      * @var string
      */
     private $tmpAesIV;
+    /** @var string */
+    private $sessionId;
 
     /**
      * @param DataCentre $dc    DC AuthKey must be generated on
@@ -117,35 +125,174 @@ abstract class BaseAuthorization implements Authorization
      * @param string $oldClientNonce
      * @param string $serverNonce
      * @param string $newClientNonce
+     * @param bool   $isTemp
      *
      * @return TLClientMessage
      */
-    abstract protected function getPqInnerDataMessage($pq, $p, $q, $oldClientNonce, $serverNonce, $newClientNonce): TLClientMessage;
+    abstract protected function getPqInnerDataMessage($pq, $p, $q, $oldClientNonce, $serverNonce, $newClientNonce, bool $isTemp = false);
 
     /**
      * @param callable $onAuthKeyReady function(AuthKey $authKey)
+     * @param bool     $forRegister
      *
      * @throws TGException
      */
-    public function createAuthKey(callable $onAuthKeyReady): void
+    public function createAuthKey(callable $onAuthKeyReady, bool $forRegister = false)
     {
-        $this->requestForPQ(function (ResPQ $pqResponse) use ($onAuthKeyReady) {
+        $this->requestForPQ(function (ResPQ $pqResponse) use ($onAuthKeyReady, $forRegister) {
             $primes = $this->findPrimes($pqResponse->getPq());
-            $this->requestDHParams($primes, $pqResponse, function ($dhResponse) use ($onAuthKeyReady, $pqResponse) {
+            $this->requestDHParams($primes, $pqResponse, function ($dhResponse) use ($onAuthKeyReady, $pqResponse, $forRegister) {
                 $dhParams = $this->decryptDHResponse($dhResponse, $pqResponse);
                 $this->setClientDHParams(
                     $dhParams,
                     $pqResponse,
-                    function (AuthParams $authKeyParams) use ($onAuthKeyReady) {
-                        $onAuthKeyReady(AuthKeyCreator::createActual(
-                            $authKeyParams->getAuthKey(),
-                            $authKeyParams->getServerSalt(),
-                            $this->dc
-                        ));
+                    function (AuthParams $authKeyParams) use ($onAuthKeyReady, $forRegister) {
+                        if ($forRegister) {
+                            $this->bindTempAuthKey($authKeyParams, $onAuthKeyReady);
+                        } else {
+                            $onAuthKeyReady(AuthKeyCreator::createActual(
+                                $authKeyParams->getAuthKey(),
+                                $authKeyParams->getServerSalt(),
+                                $this->dc
+                            ), $this->sessionId);
+                        }
                     }
                 );
             });
         });
+    }
+
+    /**
+     * @param AuthParams $permAuthParams permanent auth key params
+     * @param callable   $onAuthKeyReady
+     *
+     * @throws TGException
+     */
+    protected function bindTempAuthKey(AuthParams $permAuthParams, callable $onAuthKeyReady): void
+    {
+        $this->requestForPQ(function (ResPQ $pqResponse) use ($onAuthKeyReady, $permAuthParams) {
+            $primes = $this->findPrimes($pqResponse->getPq());
+            $this->requestDHParams($primes, $pqResponse, function ($dhResponse) use ($onAuthKeyReady, $pqResponse, $permAuthParams) {
+                $dhParams = $this->decryptDHResponse($dhResponse, $pqResponse);
+                $this->setClientDHParams(
+                    $dhParams,
+                    $pqResponse,
+                    function (AuthParams $authKeyParams) use ($onAuthKeyReady, $permAuthParams) {
+                        $nonce = openssl_random_pseudo_bytes(self::LONG_BYTES);
+                        $this->sessionId = openssl_random_pseudo_bytes(self::LONG_BYTES);
+                        $permAuthKeyId = $permAuthParams->getAuthKeyId();
+                        $tmpAuthKeyId = $authKeyParams->getAuthKeyId();
+                        $expiresAt = time() + 60000;
+                        $bindKey = new bind_auth_key_inner(
+                            $nonce,
+                            $permAuthKeyId,
+                            $tmpAuthKeyId,
+                            $this->sessionId,
+                            $expiresAt
+                        );
+                        $messageId = $this->socketContainer->getMessageId();
+                        $encryptedMessage = $this->encryptMessage($bindKey->toBinary(), $messageId, $permAuthParams);
+                        $request = new bind_temp_auth_key(
+                            $permAuthKeyId,
+                            $nonce,
+                            $expiresAt,
+                            $encryptedMessage
+                        );
+                        $this->socketContainer->getResponseAsync($request, function (AnonymousMessage $response) use ($onAuthKeyReady, $authKeyParams) {
+                            echo "GOT RESPONSE from bind_temp_auth_key\n";
+                            // should be true
+                            echo $response->getDebugPrintable();
+                            $authKeyTemp = AuthKeyCreator::createActual(
+                                $authKeyParams->getAuthKey(),
+                                $authKeyParams->getServerSalt(),
+                                $this->dc
+                            );
+                            $onAuthKeyReady($authKeyTemp, $this->sessionId);
+                            die();
+                        });
+                    }
+                );
+            }, true);
+        });
+    }
+
+    /**
+     * This binding message is encrypted in the usual way, but with MTProto v1 using the perm_auth_key.
+     * In other words, one has to prepend random:int128 (it replaces the customary session_id:long and salt:long that are irrelevant in this case),
+     * then append the same msg_id that will be used for the request, a seqno equal to zero,
+     * and the correct msg_len (40 bytes in this case); after that, one computes the msg_key:int128 as SHA1 of the resulting string,
+     * appends padding necessary for a 16-byte alignment, encrypts the resulting string using the key derived from perm_auth_key and msg_key,
+     * and prepends perm_auth_key_id and msg_key to the encrypted data as usual.
+     *
+     * @see https://core.telegram.org/mtproto_v1
+     *
+     * @param string     $binaryMessage
+     * @param int        $messageId
+     * @param AuthParams $authParams
+     *
+     * @throws TGException
+     *
+     * @return string
+     */
+    private function encryptMessage(string $binaryMessage, int $messageId, AuthParams $authParams): string
+    {
+        $seq_no = 0;
+        $randomPrefix = openssl_random_pseudo_bytes(16);
+
+        $length = strlen($binaryMessage);
+        if ($length !== 40) {
+            throw new TGException(TGException::ERR_ASSERT_BIND_KEY_LENGTH_VALID);
+        }
+
+        $data = $randomPrefix.
+            Packer::packLong($messageId).
+            pack('VV', $seq_no, $length).
+            $binaryMessage;
+        $msgKeyLarge = sha1($data, true);
+        // 128-bit
+        $msgKey = substr($msgKeyLarge, -16);
+
+        $padding = $this->calcRemainder(-$length, 16);
+        $padding = openssl_random_pseudo_bytes($padding);
+
+        $payload = $data.$padding;
+
+        list($aes_key, $aes_iv) = self::oldAesCalculate($msgKey, $authParams->getAuthKey());
+        $encryptedPayload = $this->aes->encryptIgeMode($payload, $aes_key, $aes_iv);
+
+        return
+            $authParams->getAuthKeyId().
+            $msgKey.
+            $encryptedPayload;
+    }
+
+    /** @noinspection DuplicatedCode */
+    private static function oldAesCalculate(string $msg_key, string $auth_key, bool $to_server = true): array
+    {
+        $x = $to_server ? 0 : 8;
+        $sha1_a = sha1($msg_key.substr($auth_key, $x, 32), true);
+        $sha1_b = sha1(substr($auth_key, 32 + $x, 16).$msg_key.substr($auth_key, 48 + $x, 16), true);
+        $sha1_c = sha1(substr($auth_key, 64 + $x, 32).$msg_key, true);
+        $sha1_d = sha1($msg_key.substr($auth_key, 96 + $x, 32), true);
+        $aes_key = substr($sha1_a, 0, 8).substr($sha1_b, 8, 12).substr($sha1_c, 4, 12);
+        $aes_iv = substr($sha1_a, 8, 12).substr($sha1_b, 0, 8).substr($sha1_c, 16, 4).substr($sha1_d, 0, 8);
+
+        return [$aes_key, $aes_iv];
+    }
+
+    /**
+     * @param int $a
+     * @param int $b
+     *
+     * @return float|int
+     */
+    private function calcRemainder(int $a, int $b)
+    {
+        $remainder = $a % $b;
+        if ($remainder < 0)
+            $remainder += abs($b);
+
+        return $remainder;
     }
 
     /**
@@ -174,13 +321,14 @@ abstract class BaseAuthorization implements Authorization
      * @param PQ       $pq
      * @param ResPQ    $pqData
      * @param callable $cb     function(string)
+     * @param bool     $isTemp
      *
      * @throws TGException
      */
-    private function requestDHParams(PQ $pq, ResPQ $pqData, callable $cb): void
+    private function requestDHParams(PQ $pq, ResPQ $pqData, callable $cb, bool $isTemp = false)
     {
         // prepare object
-        $data = $this->getPqInnerDataMessage($pqData->getPq(), $pq->getP(), $pq->getQ(), $this->oldClientNonce, $pqData->getServerNonce(), $this->newClientNonce);
+        $data = $this->getPqInnerDataMessage($pqData->getPq(), $pq->getP(), $pq->getQ(), $this->oldClientNonce, $pqData->getServerNonce(), $this->newClientNonce, $isTemp);
         $data = $data->toBinary();
 
         // obtain certificate by fingerprint
